@@ -91,24 +91,29 @@ SLOPE_CAP = 0.2      # largest log nudge the slope may cause
 REG_BLEND = 0.5      # median = REG_BLEND * kernel median + (1-REG_BLEND)
                      #   * trend prediction (see trend_fit); 0.5 wins LOO
 REG_SLOPE_CAP = 1.0  # the trend slope is capped at +/- this (log per log)
-# Three comparables are early-access / simultaneous-global-unlock shaped:
+# Four comparables are early-access / simultaneous-global-unlock shaped:
 # their hour 1 is inflated by early access, so their ratio curves decay
 # fast and mislead a rolling-midnight target.  For a target at/above
 # DROP_CUT they are dropped from the kernel entirely (they are still
-# scored as pseudo-cases in leave-one-out).  Under LOO this wins on
-# big (0.2030 -> 0.2001), midbig (0.2555 -> 0.2521) and huge
-# (0.1156 -> 0.1135) and harms no subset; dropping Wilds alone already
-# wins on all three, and 5 of 7 drop-subsets win on big, so the effect
-# is the EA shape, not one launch.  Honest caveats: the gains are small
-# (<=0.003, ~1 SE) and the midbig mean is largely one case (Wilds
-# itself, -0.058 when its two EA neighbours leave); worst case it is
-# neutral on the final, whose target will be huge.
+# scored as pseudo-cases in leave-one-out).  Under LOO the 3-name set
+# wins on big (0.2030 -> 0.2001), midbig (0.2555 -> 0.2521) and huge
+# (0.1156 -> 0.1135); adding Diablo IV (round 5) wins on every subset
+# (big 0.2001 -> 0.1991, huge 0.1135 -> 0.1121, midbig 0.2521 ->
+# 0.2513) and damages none of the largest launches (ELDEN RING /
+# Cyberpunk unchanged).  A 5-name set (+ Nightreign) wins huge more
+# (0.1090) but hurts Cyberpunk (+0.009, the launch closest in size to
+# GTA VI's likely hour 1) and midbig, so it was rejected.  A
+# data-driven mean-log-ratio filter reproduces exactly this 3-name set
+# (and no shape rule beats the name list), so the list stands.
+# Honest caveats: the gains are small (<=0.003, ~1 SE); worst case it
+# is neutral on the final, whose target will be huge.
 DROP_CUT = 100000                  # drop the names below for targets
                                    # at/above this h1
 DROP_NAMES = frozenset({
     "Monster Hunter Wilds",
     "Starfield",
     "Assassin's Creed Shadows",
+    "Diablo IV",
 })
 # A huge launch's shape is best predicted by other huge launches: for a
 # target at/above HUGE_CUT, non-huge comparables are downweighted to
@@ -121,6 +126,20 @@ DROP_NAMES = frozenset({
 HUGE_CUT = 300000                # a target at/above this h1 is huge
 HUGE_W = 0.25                    # weight multiplier for non-huge
                                  # comparables when the target is huge
+# Mid-day tail widening: the LOO residuals of the median forecast are
+# heavier-tailed than lognormal in the middle of the day (hours 10-15,
+# tail/shoulder ratio 1.17-1.55), so the outer quantiles there are
+# widened by MIDDAY_TAIL while the shoulders stay lognormal.  An
+# all-hours tail widening wins all/small but LOSES huge, so the
+# widening applies only where the asymmetry lives.  Under LOO (on top
+# of the 4-name drop) this wins big (0.1991 -> 0.1987), midbig
+# (0.2513 -> 0.2507) and all (0.3761 -> 0.3748) and leaves huge
+# unchanged (0.1121); T=1.1 and T=1.15 tie on big/huge, 1.1 is the
+# rounder, less aggressive choice.
+MIDDAY_LO = 10                   # first hour with the widened tail
+MIDDAY_HI = 15                   # last hour with the widened tail
+MIDDAY_TAIL = 1.1                # multiplier on the +-1.645 z-scores
+                                 # for mid-day hours only
 
 
 def to_dt(text):
@@ -373,7 +392,17 @@ def learn_quantiles(curves, hour1, pre_ratio):
                 spread = max(
                     SPREAD_HALF, kern_spread * SPREAD_SHRINK
                 )
-            logs = [median + z * spread for z in FALLBACK_Z]
+            if MIDDAY_LO <= hour <= MIDDAY_HI:
+                z_scores = [
+                    -1.645 * MIDDAY_TAIL,
+                    -0.674,
+                    0.0,
+                    0.674,
+                    1.645 * MIDDAY_TAIL,
+                ]
+            else:
+                z_scores = FALLBACK_Z
+            logs = [median + z * spread for z in z_scores]
         else:
             logs = [weighted_quantile(pairs, level) for level in LEVELS]
             median = logs[2]
