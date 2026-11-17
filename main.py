@@ -85,6 +85,17 @@ SLOPE_CAP = 0.2      # largest log nudge the slope may cause
 REG_BLEND = 0.5      # median = REG_BLEND * kernel median + (1-REG_BLEND)
                      #   * trend prediction (see trend_fit); 0.5 wins LOO
 REG_SLOPE_CAP = 1.0  # the trend slope is capped at +/- this (log per log)
+# A huge launch's shape is best predicted by other huge launches: for a
+# target at/above HUGE_CUT, non-huge comparables are downweighted to
+# HUGE_W.  Under leave-one-out this wins on big (0.2053 -> 0.2030) and
+# huge (0.1217 -> 0.1156) and harms no subset; 5 of the 6 huge cases
+# improve, the one that worsens (Diablo IV) is early-access shaped and
+# does not resemble a rolling-midnight launch.  The gain is modest and
+# flat across HUGE_W 0-0.5 (a plateau, not a knife-edge); 0.25 is the
+# robust centre.
+HUGE_CUT = 300000                # a target at/above this h1 is huge
+HUGE_W = 0.25                    # weight multiplier for non-huge
+                                 # comparables when the target is huge
 
 
 def to_dt(text):
@@ -287,6 +298,11 @@ def learn_quantiles(curves, hour1, pre_ratio):
             if not viewers:
                 continue
             weight = gauss(math.log(comp_h1) - ref_log, SIZE_BW) * plat
+            # Huge regime: a huge launch's shape is best predicted by
+            # other huge launches, so non-huge comparables count less
+            # when the target itself is huge (see HUGE_W above).
+            if hour1 >= HUGE_CUT and comp_h1 < HUGE_CUT:
+                weight *= HUGE_W
             if ref_pre is not None and comp_pre:
                 weight *= gauss(math.log(comp_pre) - ref_pre, PRE_BW)
             pairs.append((math.log(viewers / comp_h1), weight))
