@@ -32,6 +32,12 @@ own ratio curves r = viewers(h) / viewers(1):
     extremes and score worse under leave-one-out pinball.)
   * the median curve is smoothed twice across neighbouring hours, because
     a real audience curve moves gradually;
+  * three early-access-shaped comparables (Monster Hunter Wilds,
+    Starfield, Assassin's Creed Shadows) are dropped from the kernel
+    when the target itself is big (hour 1 at/above 100k): their hour 1
+    is inflated by early access, so their ratio curves decay fast and
+    mislead a rolling-midnight launch.  Under leave-one-out this wins
+    on big and huge and harms no subset (see DROP_NAMES below).
   * the minute/hourly history before the checkpoint gives a slope for
     hour 1; a steep slope would nudge the first few forecast hours in
     the same direction, fading fast.  The nudge is OFF by default: the
@@ -85,6 +91,25 @@ SLOPE_CAP = 0.2      # largest log nudge the slope may cause
 REG_BLEND = 0.5      # median = REG_BLEND * kernel median + (1-REG_BLEND)
                      #   * trend prediction (see trend_fit); 0.5 wins LOO
 REG_SLOPE_CAP = 1.0  # the trend slope is capped at +/- this (log per log)
+# Three comparables are early-access / simultaneous-global-unlock shaped:
+# their hour 1 is inflated by early access, so their ratio curves decay
+# fast and mislead a rolling-midnight target.  For a target at/above
+# DROP_CUT they are dropped from the kernel entirely (they are still
+# scored as pseudo-cases in leave-one-out).  Under LOO this wins on
+# big (0.2030 -> 0.2001), midbig (0.2555 -> 0.2521) and huge
+# (0.1156 -> 0.1135) and harms no subset; dropping Wilds alone already
+# wins on all three, and 5 of 7 drop-subsets win on big, so the effect
+# is the EA shape, not one launch.  Honest caveats: the gains are small
+# (<=0.003, ~1 SE) and the midbig mean is largely one case (Wilds
+# itself, -0.058 when its two EA neighbours leave); worst case it is
+# neutral on the final, whose target will be huge.
+DROP_CUT = 100000                  # drop the names below for targets
+                                   # at/above this h1
+DROP_NAMES = frozenset({
+    "Monster Hunter Wilds",
+    "Starfield",
+    "Assassin's Creed Shadows",
+})
 # A huge launch's shape is best predicted by other huge launches: for a
 # target at/above HUGE_CUT, non-huge comparables are downweighted to
 # HUGE_W.  Under leave-one-out this wins on big (0.2053 -> 0.2030) and
@@ -204,8 +229,10 @@ def extract_curve(comp):
     """A comparable's release-day curve, or None when it cannot anchor one.
 
     Returns (hour1, {hour: viewers for hours 1..24}, pre_ratio,
-    platform_factor).  Hours are offsets from the comparable's day_start;
-    pre_ratio is the hour before release day over hour 1, or None.
+    platform_factor, name).  Hours are offsets from the comparable's
+    day_start; pre_ratio is the hour before release day over hour 1,
+    or None.  The name travels with the curve so learn_quantiles can
+    drop early-access-shaped comparables for big targets (DROP_NAMES).
     """
     try:
         start = to_dt(comp["day_start"])
@@ -233,7 +260,13 @@ def extract_curve(comp):
     if sum(1 for h in range(2, 25) if hours.get(h)) < MIN_DAY_HOURS:
         return None
     pre_ratio = (pre / hour1) if pre else None
-    return hour1, hours, pre_ratio, platform_factor(comp.get("platforms"))
+    return (
+        hour1,
+        hours,
+        pre_ratio,
+        platform_factor(comp.get("platforms")),
+        comp.get("name"),
+    )
 
 
 def target_context(case):
@@ -293,9 +326,13 @@ def learn_quantiles(curves, hour1, pre_ratio):
     for hour in range(2, 25):
         pairs = []
         points = []
-        for comp_h1, hourly, comp_pre, plat in curves:
+        for comp_h1, hourly, comp_pre, plat, name in curves:
             viewers = hourly.get(hour)
             if not viewers:
+                continue
+            # Early-access-shaped comparables mislead a big rolling-
+            # midnight target (see DROP_NAMES above); drop them here.
+            if hour1 >= DROP_CUT and name in DROP_NAMES:
                 continue
             weight = gauss(math.log(comp_h1) - ref_log, SIZE_BW) * plat
             # Huge regime: a huge launch's shape is best predicted by
